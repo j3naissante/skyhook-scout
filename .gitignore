@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+releases/
+.pytest_cache/
+*.sqlite3*
+.tools/
+.flatpak-builder/
+docs/*.png
+docs/*.json
+private/
+private-packaging/
+.private/
+PRIVATE_BUILD.md
