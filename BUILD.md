@@ -19,7 +19,7 @@ Compile a portable Windows executable:
 .\.venv\Scripts\python.exe tools\build.py
 ```
 
-Output: `dist/SkyhookScout/SkyhookScout.exe` and `releases/SkyhookScout-1.1.0-windows-x64.zip`. Extract the ZIP and keep `_internal/` beside the EXE.
+Output: `dist/SkyhookScout/SkyhookScout.exe` and `releases/SkyhookScout-1.1.1-windows-x64.zip`. Extract the ZIP and keep `_internal/` beside the EXE.
 
 ## Linux
 
@@ -48,9 +48,30 @@ Compile a portable Linux application:
 ./dist/SkyhookScout/SkyhookScout
 ```
 
-Output: `dist/SkyhookScout/SkyhookScout` and `releases/SkyhookScout-1.1.0-linux-x64.tar.gz` on x86-64 (the filename follows the build architecture). Keep the entire folder intact. Equivalent system libraries are needed on other distributions.
+Output: `dist/SkyhookScout/SkyhookScout` and `releases/SkyhookScout-1.1.1-linux-x64.tar.gz` on x86-64 (the filename follows the build architecture). Keep the entire folder intact. Equivalent system libraries are needed on other distributions.
 
 Build each platform on that platform: Windows executables on Windows and Linux executables on Linux. Linux bundles should be built on the oldest distribution you intend to support. The Windows build has been tested; Linux builds have not been tested on this Windows host.
+
+## Change the release version
+
+From the project folder in PowerShell:
+
+```powershell
+.\tools\Set-Version.ps1 1.1.1
+```
+
+This updates the app version, release date and documentation. Python package metadata and build filenames read the app version automatically. It does not build, commit or push anything. On Linux, edit `__version__` and `__release_date__` in `skyhook_scout/__init__.py` and update documentation references.
+
+After testing your changes, commit and push them:
+
+```powershell
+git add .
+git diff --cached --stat
+git commit -m "Release 1.1.1"
+git push origin main
+```
+
+Rebuild release files with the new version before uploading them to GitHub Releases.
 
 ## Checks and source archives
 

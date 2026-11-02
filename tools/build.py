@@ -12,7 +12,8 @@ import tarfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.1.0"
+sys.path.insert(0, str(ROOT))
+from skyhook_scout import __version__ as VERSION
 
 
 def compile_app():

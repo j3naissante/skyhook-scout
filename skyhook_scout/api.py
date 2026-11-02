@@ -175,9 +175,7 @@ class Client:
             errors.append(f"Location lookup failed for {failed} targets; refresh to retry.")
         return {"rows": rows, "hooks": hooks, "scout": scout, "errors": errors, "complete": True}
 
-    def plan(self, origin, destination, scout, size=0):
-        if not scout.checked or time.time() - scout.checked > 900:
-            raise ApiError("EVE Scout data is unavailable or over 15 minutes old. Refresh intel first.")
+    def resolve_origin(self, origin):
         if isinstance(origin, str):
             if origin in HUBS:
                 origin = HUBS[origin]
@@ -188,7 +186,9 @@ class Client:
                 if not result.get("systems"):
                     raise ApiError("Starting system not found. Enter a solar system name, e.g. Jita.")
                 origin = result["systems"][0]["id"]
-        holes = active_connections(scout.data, size)
+        return origin
+
+    def route_systems(self, origin, destination, holes):
         if origin == destination:
             systems = [origin]
         else:
@@ -196,6 +196,31 @@ class Client:
                 {"preference": "Shorter", "connections": connection_edges(holes)}).data["route"]
         if not systems or systems[0] != origin or systems[-1] != destination:
             raise ApiError("No valid route returned for this target.")
+        return systems
+
+    def jump_counts(self, origin, destinations, scout, size=0, progress=lambda *_: None, cancelled=lambda: False):
+        if not scout.checked or time.time() - scout.checked > 900:
+            raise ApiError("EVE Scout data is unavailable or over 15 minutes old. Refresh intel first.")
+        origin = self.resolve_origin(origin)
+        holes = active_connections(scout.data, size)
+        for destination in sorted(set(destinations)):
+            if cancelled() or self.cancelled.is_set():
+                return
+            if time.time() - scout.checked > 900:
+                raise ApiError("Scout intel expired during distance calculation. Refresh intel.")
+            try:
+                count = len(self.route_systems(origin, destination, holes)) - 1
+            except ApiError as exc:
+                progress((destination, None, str(exc)), "")
+            else:
+                progress((destination, count, ""), "")
+
+    def plan(self, origin, destination, scout, size=0):
+        if not scout.checked or time.time() - scout.checked > 900:
+            raise ApiError("EVE Scout data is unavailable or over 15 minutes old. Refresh intel first.")
+        origin = self.resolve_origin(origin)
+        holes = active_connections(scout.data, size)
+        systems = self.route_systems(origin, destination, holes)
         result = describe_route(systems, holes)
         names = {}
         for i in range(0, len(systems), 500):

@@ -1,4 +1,4 @@
-# Skyhook Scout 1.1.0
+# Skyhook Scout
 
 Native Python desktop tool for EVE Online skyhook raiding. Direct public APIs; no login, application server or API key. Open-source software under the MIT license.
 
@@ -7,13 +7,14 @@ Native Python desktop tool for EVE Online skyhook raiding. Direct public APIs; n
 * Region, planet and planet-type filters plus text search.
 * System-local time by default, with a saved EVE/UTC display option.
 * Click-to-route from Thera, Turnur or any named system, using EVE Scout's reported wormholes.
+* Sort targets by total jumps from the selected departure using the Jumps column after Time Left.
 * Separate gate/wormhole counts, signatures, reported size/expiry and configurable raid estimates.
 * Background fetching, persistent caching, five-minute refreshes and stale-data warnings.
 * Compact windows use full-width Targets/Route tabs; route details scroll instead of overlapping.
 
 ## Download / run
 
-Extract `releases/SkyhookScout-1.1.0-windows-x64.zip`, then run `SkyhookScout.exe`. Keep `_internal/` beside the EXE. Python is not required for the packaged app.
+From releases 
 
 For running from source and compiling portable Windows or Linux applications, see **[BUILD.md](BUILD.md)**.
 

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 import time
+import threading
 
 from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, QRunnable,
     QSettings, QSortFilterProxyModel, Qt, QThreadPool, QTimer, QUrl, Signal, Slot)
@@ -56,12 +57,16 @@ class Worker(QRunnable):
 
 
 class TargetsModel(QAbstractTableModel):
-    headers = ["SYSTEM", "PLANET", "TYPE", "REGION", "OPENS · UTC", "CLOSES · UTC", "STATUS", "TIME LEFT"]
+    headers = ["SYSTEM", "PLANET", "TYPE", "REGION", "OPENS · UTC", "CLOSES · UTC", "STATUS", "TIME LEFT", "JUMPS"]
 
     def __init__(self):
         super().__init__()
         self.rows = []
         self.system_time = True
+        self.jump_counts = {}
+        self.jump_errors = {}
+        self.jump_loading = False
+        self.jump_error = ""
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
@@ -83,6 +88,18 @@ class TargetsModel(QAbstractTableModel):
         h, c = self.rows[index.row()], index.column()
         start, end = timestamp(h["theft_vulnerability"]["start"]), timestamp(h["theft_vulnerability"]["end"])
         state, now = status(h), time.time()
+        if c == 8:
+            system = h["solar_system_id"]
+            count = self.jump_counts.get(system)
+            if role == Qt.ItemDataRole.DisplayRole:
+                return str(count) if count is not None else ("…" if self.jump_loading and system not in self.jump_counts else "—")
+            if role == Qt.ItemDataRole.UserRole:
+                return count
+            if role == Qt.ItemDataRole.ToolTipRole:
+                return self.jump_errors.get(system) or self.jump_error or (
+                    "Calculating distance…" if count is None else
+                    "Total jumps from the selected departure, including eligible EVE Scout wormholes.")
+            return None
         if role == Qt.ItemDataRole.DisplayRole:
             return [h.get("system", str(h["solar_system_id"])), h.get("planet", f"Planet {h['planet_id']}"),
                     h.get("planet_type", "—"), h.get("region", "—"), display_time(start, self.system_time, False),
@@ -117,6 +134,10 @@ class TargetsModel(QAbstractTableModel):
         if self.rows:
             self.dataChanged.emit(self.index(0, 6), self.index(len(self.rows) - 1, 7))
 
+    def jumps_changed(self):
+        if self.rows:
+            self.dataChanged.emit(self.index(0, 8), self.index(len(self.rows) - 1, 8))
+
 
 class TargetsProxy(QSortFilterProxyModel):
     def __init__(self):
@@ -128,6 +149,17 @@ class TargetsProxy(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, row, parent):
         return matches(self.sourceModel().rows[row], self.query, self.region, self.planet_type, self.window, planet=self.planet)
+
+    def lessThan(self, left, right):
+        if left.column() == 8:
+            a, b = left.data(Qt.ItemDataRole.UserRole), right.data(Qt.ItemDataRole.UserRole)
+            if a is None or b is None:
+                if a is None and b is None:
+                    return left.row() < right.row()
+                # Keep unavailable/pending distances last in either direction.
+                return (a is not None) if self.sortOrder() == Qt.SortOrder.AscendingOrder else (a is None)
+            return a < b
+        return super().lessThan(left, right)
 
 
 class MainWindow(QMainWindow):
@@ -147,6 +179,8 @@ class MainWindow(QMainWindow):
         self.route_generation = 0
         self.last_errors = []
         self.compact_layout = None
+        self.distance_context = None
+        self.distance_cancel = threading.Event()
         self.setWindowTitle(f"Skyhook Scout {__version__}")
         self.setWindowIcon(make_icon())
         self.resize(1510, 940)
@@ -154,6 +188,11 @@ class MainWindow(QMainWindow):
         assets = Path(__file__).parent / "assets"
         self.setStyleSheet((assets / "theme.qss").read_text(encoding="utf-8").replace("@ASSET_DIR@", assets.as_posix()))
         self.build_ui()
+        self.distance_timer = QTimer(self)
+        self.distance_timer.setSingleShot(True)
+        self.distance_timer.timeout.connect(self.calculate_jumps)
+        self.origin.currentTextChanged.connect(self.distance_settings_changed)
+        self.ship.currentIndexChanged.connect(self.distance_settings_changed)
         self.update_responsive_layout()
         self.tick_timer = QTimer(self)
         self.tick_timer.timeout.connect(self.tick)
@@ -330,7 +369,7 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(46)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for i, width in enumerate([100, 145, 80, 140, 115, 115, 115, 100]):
+        for i, width in enumerate([90, 130, 70, 125, 105, 105, 105, 90, 75]):
             self.table.setColumnWidth(i, width)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -492,7 +531,61 @@ class MainWindow(QMainWindow):
         self.table.selectionModel().blockSignals(False)
         self.warning.setText("\n".join(self.last_errors))
         self.warning.setVisible(bool(self.last_errors))
+        if data.get("complete"):
+            self.distance_context = None
+            self.distance_settings_changed()
         self.tick()
+
+    def jump_context(self):
+        edges = tuple(sorted({(int(h["out_system_id"]), int(h["in_system_id"]))
+                              for h in active_connections(self.scout.data, self.ship.currentData())}))
+        return (self.origin.currentText().strip(), self.ship.currentData(), self.scout.checked,
+                time.time() - self.scout.checked > 900, edges)
+
+    def distance_settings_changed(self, *_):
+        self.distance_cancel.set()
+        self.distance_context = None
+        self.model.jump_counts.clear()
+        self.model.jump_errors.clear()
+        self.model.jump_error = ""
+        self.model.jump_loading = not self.demo
+        self.model.jumps_changed()
+        self.distance_timer.start(600)
+
+    def calculate_jumps(self):
+        if self.demo or not self.model.rows:
+            return
+        self.distance_cancel.set()
+        cancel = self.distance_cancel = threading.Event()
+        context = self.distance_context = self.jump_context()
+        origin, size = context[:2]
+        scout = self.scout
+        destinations = {h["solar_system_id"] for h in self.model.rows}
+        self.model.jump_loading = True
+        self.model.jumps_changed()
+
+        def current():
+            return not cancel.is_set() and context == self.jump_context()
+
+        def progress(item, _message):
+            if current():
+                system, count, error = item
+                self.model.jump_counts[system] = count
+                self.model.jump_errors[system] = error
+                self.model.jumps_changed()
+
+        def finished(_result=None):
+            if current():
+                self.model.jump_loading = False
+                self.model.jumps_changed()
+
+        def failed(message):
+            if current():
+                self.model.jump_error = message
+                finished()
+
+        self.run_task(lambda notify: self.client.jump_counts(origin, destinations, scout, size, notify, cancel.is_set),
+                      finished, failed, progress)
 
     def populate(self, combo, default, key):
         value = combo.currentData() or ""
@@ -633,6 +726,9 @@ class MainWindow(QMainWindow):
         self.stat_holes.setText(str(len(active_connections(self.scout.data, now=now))))
         self.stat_shown.setText(str(self.proxy.rowCount()))
         self.update_estimate()
+        if (not self.demo and not self.refreshing and self.model.rows
+                and self.distance_context != self.jump_context() and not self.distance_timer.isActive()):
+            self.distance_settings_changed()
         if self.hook_snapshot.checked:
             source = "CACHED / STALE" if self.hook_snapshot.stale else "ESI"
             self.statusBar().showMessage(f"{source} checked {self.format_time(self.hook_snapshot.checked)} · Scout checked "
@@ -661,6 +757,8 @@ class MainWindow(QMainWindow):
             "<p>PySide6 / Qt are distributed under their own licenses; see THIRD_PARTY_NOTICES.md and licenses/ in the Windows package.</p>")
 
     def closeEvent(self, event):
+        self.distance_cancel.set()
+        self.distance_timer.stop()
         if self.tasks:
             self.client.cancelled.set()
             self.statusBar().showMessage("Finishing background requests before closing…")

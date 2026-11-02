@@ -90,7 +90,7 @@ class ResponsiveLayoutTests(unittest.TestCase):
         self.assertTrue(self.window.compact_layout)
         self.assertEqual(self.window.compact_tabs.count(), 2)
         self.assertEqual(self.window.workspace.currentWidget(), self.window.compact_tabs)
-        self.assertEqual(self.window.table.model().columnCount(), 8)
+        self.assertEqual(self.window.table.model().columnCount(), 9)
         self.assertGreater(self.window.table.viewport().width(), 900)
         self.assertLessEqual(self.window.table.horizontalHeader().length(), self.window.table.viewport().width())
 
@@ -132,6 +132,74 @@ class ResponsiveLayoutTests(unittest.TestCase):
                 if self.window.compact_layout:
                     self.window.compact_tabs.setCurrentIndex(1)
                     self.app.processEvents()
+
+    def test_jumps_sort_numerically_with_unknowns_last_in_both_directions(self):
+        self.load_targets(4)
+        self.window.model.jump_counts = {30000000: 10, 30000001: 2, 30000002: 0}
+        self.window.model.jumps_changed()
+        self.assertEqual(self.window.model.headerData(8, Qt.Orientation.Horizontal), "JUMPS")
+        for order, expected in ((Qt.SortOrder.AscendingOrder, [0, 2, 10, None]),
+                                (Qt.SortOrder.DescendingOrder, [10, 2, 0, None])):
+            self.window.table.sortByColumn(8, order)
+            self.app.processEvents()
+            self.assertEqual([self.window.proxy.index(row, 8).data(Qt.ItemDataRole.UserRole)
+                              for row in range(4)], expected)
+        self.settle(1114, 830)
+        self.assert_targets_visible()
+
+    def test_departure_changes_reject_old_distance_results_and_refresh_clears_counts(self):
+        self.load_targets(4)
+        self.window.distance_timer.stop()
+        self.window.demo = False
+        self.window.run_task = lambda work, success, failure, progress=None: self.pending.append((work, success, failure, progress))
+        self.pending = []
+        self.window.calculate_jumps()
+        old_progress = self.pending[-1][3]
+        old_progress((30000000, 10, ""), "")
+        self.assertEqual(self.window.model.index(0, 8).data(), "10")
+        self.window.origin.setCurrentText("Turnur" if self.window.origin.currentText() != "Turnur" else "Thera")
+        self.assertEqual(self.window.model.index(0, 8).data(), "…")
+        old_progress((30000000, 99, ""), "")
+        self.assertNotIn(30000000, self.window.model.jump_counts)
+        self.window.calculate_jumps()
+        _, success, _, progress = self.pending[-1]
+        progress((30000000, 2, ""), "")
+        progress((30000001, None, "No route"), "")
+        success(None)
+        self.assertEqual(self.window.model.index(0, 8).data(), "2")
+        self.assertEqual(self.window.model.index(1, 8).data(), "—")
+        self.assertEqual(self.window.model.index(1, 8).data(Qt.ItemDataRole.ToolTipRole), "No route")
+        self.window.ship.setCurrentIndex(1)
+        self.assertFalse(self.window.model.jump_counts)
+        self.window.calculate_jumps()
+        self.pending[-1][3]((30000000, 3, ""), "")
+        self.load_targets(4)
+        self.assertFalse(self.window.model.jump_counts)
+
+    def test_background_distances_populate_and_resort_the_table(self):
+        self.load_targets(4)
+        self.window.distance_timer.stop()
+        self.window.demo = False
+        self.window.tick_timer.stop()
+        def counts(origin, destinations, scout, size, progress, cancelled):
+            self.assertEqual(len(destinations), 4)
+            for system, count in ((30000000, 10), (30000001, 2), (30000002, 0)):
+                progress((system, count, ""), "")
+        self.window.client.jump_counts = counts
+        self.window.table.sortByColumn(8, Qt.SortOrder.AscendingOrder)
+        self.window.calculate_jumps()
+        deadline = time.monotonic() + 5
+        while self.window.tasks and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(0.005)
+        self.app.processEvents()
+        self.assertFalse(self.window.tasks, "Distance worker did not finish")
+        self.assertFalse(self.window.model.jump_loading)
+        self.assertEqual([self.window.proxy.index(row, 8).data(Qt.ItemDataRole.UserRole)
+                          for row in range(4)], [0, 2, 10, None])
+        self.window.scout.checked -= 901
+        self.window.tick()
+        self.assertFalse(self.window.model.jump_counts, "Expired intel must invalidate displayed distances")
 
 
 if __name__ == "__main__":
