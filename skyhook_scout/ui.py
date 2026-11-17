@@ -243,6 +243,7 @@ class MainWindow(QMainWindow):
         logo.setPixmap(make_icon().pixmap(28, 28))
         header.addWidget(logo)
         header.addWidget(self.label("SKYHOOK SCOUT", "Brand"))
+        header.addWidget(self.label(".EE is recruiting", "Recruiting"))
         header.addStretch()
         header.addWidget(self.button("EVE Scout ↗", lambda: QDesktopServices.openUrl(QUrl("https://www.eve-scout.com/#/map"))))
         header.addWidget(self.button("About", self.about))
